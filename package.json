@@ -1,0 +1,56 @@
+{
+  "name": "tabby-browser",
+  "version": "0.1.0",
+  "description": "Render a web browser tab inside Tabby",
+  "keywords": [
+    "tabby-plugin",
+    "browser",
+    "electron",
+    "webview",
+    "terminal"
+  ],
+  "main": "dist/index.js",
+  "typings": "dist/index.d.ts",
+  "scripts": {
+    "build": "webpack --node-env production --progress --color",
+    "watch": "webpack --node-env development --progress --color --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@angular/common": "^12.2.0",
+    "@angular/core": "^12.2.0",
+    "@angular/forms": "^12.2.0",
+    "@angular/platform-browser": "^12.2.0",
+    "@types/node": "^16.18.126",
+    "@types/webpack-env": "^1.18.0",
+    "apply-loader": "^2.0.0",
+    "css-loader": "^6.7.0",
+    "electron": "^32.0.0",
+    "pug": "^3.0.4",
+    "pug-loader": "^2.4.0",
+    "rxjs": "^7.4.0",
+    "sass": "^1.55.0",
+    "sass-loader": "^13.0.0",
+    "style-loader": "^3.3.0",
+    "tabby-core": "1.0.231-nightly.0",
+    "tabby-settings": "1.0.231-nightly.0",
+    "ts-loader": "^9.0.0",
+    "typescript": "^4.9.5",
+    "webpack": "^5.0.0",
+    "webpack-cli": "^4.0.0",
+    "zone.js": "^0.11.5"
+  },
+  "author": "Karol Nowacki <karol@b24net.pl>",
+  "homepage": "https://github.com/karolnowacki/tabby-browser#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/karolnowacki/tabby-browser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/karolnowacki/tabby-browser/issues"
+  }
+}

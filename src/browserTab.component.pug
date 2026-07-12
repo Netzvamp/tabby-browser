@@ -1,0 +1,34 @@
+.browser-tab
+    .toolbar('*ngIf'='!chromeless')
+        button.btn.btn-secondary(title='Back', '(click)'='goBack()')
+            i.fas.fa-arrow-left
+        button.btn.btn-secondary(title='Forward', '(click)'='goForward()')
+            i.fas.fa-arrow-right
+        button.btn.btn-secondary(title='Reload', '(click)'='reload()')
+            i.fas.fa-redo
+        input.form-control.address-bar(
+            #addressBar,
+            type='text',
+            '[(ngModel)]'='addressBarValue',
+            '(keydown.enter)'='navigate()',
+            placeholder='Enter address'
+        )
+    .url-prompt('*ngIf'='showPrompt')
+        .url-prompt-inner
+            label.url-prompt-label Enter URL
+            input.form-control.url-prompt-input(
+                #urlPrompt,
+                type='text',
+                '[(ngModel)]'='promptValue',
+                '(keydown.enter)'='submitPrompt()',
+                placeholder='https://...',
+                autofocus
+            )
+            button.btn.btn-primary('(click)'='submitPrompt()') Go
+    .load-error('*ngIf'='loadError')
+        .load-error-inner
+            .load-error-message {{ loadError }}
+            .load-error-actions
+                button.btn.btn-secondary('(click)'='cancel()') Cancel
+                button.btn.btn-primary('(click)'='reload()') Retry
+    .view-host(#host)

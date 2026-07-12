@@ -1,0 +1,30 @@
+.form-line
+    .header
+        .title Homepage
+        .description Opened by the globe toolbar button. Leave blank to start with an empty, focused address bar.
+    input.form-control(
+        type='text',
+        style='max-width: 300px',
+        '[(ngModel)]'='config.store.browser.homepage',
+        '(ngModelChange)'='config.save()',
+        placeholder='https://...'
+    )
+
+.form-line
+    .header
+        .title Show the "Open browser" toolbar button
+    input(
+        type='checkbox',
+        '[(ngModel)]'='config.store.browser.showToolbarButton',
+        '(ngModelChange)'='config.save()'
+    )
+
+.form-line
+    .header
+        .title Show the "Web app" button
+        .description Opens a single page without browser controls; restored on restart like a terminal.
+    input(
+        type='checkbox',
+        '[(ngModel)]'='config.store.browser.showWebAppButton',
+        '(ngModelChange)'='config.save()'
+    )
