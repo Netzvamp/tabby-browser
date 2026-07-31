@@ -13,6 +13,8 @@
             '(keydown.enter)'='navigate()',
             placeholder='Enter address'
         )
+        button.btn.btn-secondary('*ngIf'='isSplit', title='Close pane', '(click)'='closePane()')
+            i.fas.fa-times
     .url-prompt('*ngIf'='showPrompt')
         .url-prompt-inner
             label.url-prompt-label Enter URL
@@ -31,4 +33,5 @@
             .load-error-actions
                 button.btn.btn-secondary('(click)'='cancel()') Cancel
                 button.btn.btn-primary('(click)'='reload()') Retry
-    .view-host(#host)
+    //- tabindex: focus target for parking the native view, see syncOverlay()
+    .view-host(#host, tabindex='-1', '[class.split]'='isSplit')

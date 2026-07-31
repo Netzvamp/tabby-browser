@@ -73,4 +73,16 @@
 .view-host {
     flex: 1;
     min-height: 0;
+    outline: none;
+
+    // split-tab-spanner is 10px thick and centred on the pane border, so it reaches 5px
+    // into us - and the native view would cover it, leaving the resize handle ungrabbable.
+    // Margin (not padding) shrinks the border box, so getBoundingClientRect() and the view
+    // bounds follow along on their own.
+    // Inset on all four sides, including edges that have no neighbouring pane - working out
+    // which sides actually border a sibling means walking the SplitContainer tree, which
+    // isn't worth it for 5px.
+    &.split {
+        margin: 5px;
+    }
 }

@@ -38,7 +38,9 @@ export class ButtonProvider extends ToolbarButtonProvider {
                 title: 'Open browser',
                 weight: 5,
                 click: () => {
-                    this.app.openNewTabRaw({
+                    // openNewTab, not openNewTabRaw: raw skips the SplitTabComponent
+                    // wrapper, which is what renders pane labels and drop zones.
+                    this.app.openNewTab({
                         type: BrowserTabComponent,
                         inputs: { url: this.config.store.browser.homepage },
                     })
@@ -66,7 +68,7 @@ export class BrowserCommandProvider extends CommandProvider {
                 icon: GLOBE_ICON,
                 weight: 10,
                 run: async () => {
-                    this.app.openNewTabRaw({
+                    this.app.openNewTab({
                         type: BrowserTabComponent,
                         inputs: { chromeless: true },
                     })
