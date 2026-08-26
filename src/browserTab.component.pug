@@ -1,19 +1,21 @@
+//- The view paints over any DOM on top of it, so the close button needs the toolbar
 .browser-tab
-    .toolbar('*ngIf'='!chromeless')
-        button.btn.btn-secondary(title='Back', '(click)'='goBack()')
-            i.fas.fa-arrow-left
-        button.btn.btn-secondary(title='Forward', '(click)'='goForward()')
-            i.fas.fa-arrow-right
-        button.btn.btn-secondary(title='Reload', '(click)'='reload()')
-            i.fas.fa-redo
-        input.form-control.address-bar(
-            #addressBar,
-            type='text',
-            '[(ngModel)]'='addressBarValue',
-            '(keydown.enter)'='navigate()',
-            placeholder='Enter address'
-        )
-        button.btn.btn-secondary('*ngIf'='isSplit', title='Close pane', '(click)'='closePane()')
+    .toolbar('*ngIf'='!chromeless || isSplit', '[class.minimal]'='chromeless')
+        ng-container('*ngIf'='!chromeless')
+            button.btn.btn-secondary(title='Back', '(click)'='goBack()')
+                i.fas.fa-arrow-left
+            button.btn.btn-secondary(title='Forward', '(click)'='goForward()')
+                i.fas.fa-arrow-right
+            button.btn.btn-secondary(title='Reload', '(click)'='reload()')
+                i.fas.fa-redo
+            input.form-control.address-bar(
+                #addressBar,
+                type='text',
+                '[(ngModel)]'='addressBarValue',
+                '(keydown.enter)'='navigate()',
+                placeholder='Enter address'
+            )
+        button.btn.btn-secondary.close-pane('*ngIf'='isSplit', title='Close pane', '(click)'='closePane()')
             i.fas.fa-times
     .url-prompt('*ngIf'='showPrompt')
         .url-prompt-inner

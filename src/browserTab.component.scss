@@ -23,6 +23,29 @@
     .address-bar {
         flex: 1;
     }
+
+    // Right-aligned even when it is the toolbar's only child
+    .close-pane {
+        margin-left: auto;
+    }
+
+    // Chromeless: the bar carries nothing but the close button
+    &.minimal {
+        padding: 0;
+
+        .close-pane {
+            padding: 0 4px;
+            border: none;
+            background: transparent;
+            font-size: 11px;
+            line-height: 18px;
+            opacity: 0.4;
+
+            &:hover {
+                opacity: 1;
+            }
+        }
+    }
 }
 
 .url-prompt {
@@ -75,13 +98,8 @@
     min-height: 0;
     outline: none;
 
-    // split-tab-spanner is 10px thick and centred on the pane border, so it reaches 5px
-    // into us - and the native view would cover it, leaving the resize handle ungrabbable.
-    // Margin (not padding) shrinks the border box, so getBoundingClientRect() and the view
-    // bounds follow along on their own.
-    // Inset on all four sides, including edges that have no neighbouring pane - working out
-    // which sides actually border a sibling means walking the SplitContainer tree, which
-    // isn't worth it for 5px.
+    // split-tab-spanner reaches 5px in from the pane border, where the view would cover it.
+    // Margin, not padding: it shrinks the border box, so the view bounds follow along.
     &.split {
         margin: 5px;
     }

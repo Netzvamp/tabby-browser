@@ -1,9 +1,11 @@
 import { Component, Injector, Input, ViewChild, ElementRef, AfterViewInit, OnDestroy, NgZone } from '@angular/core'
 import { BaseTabComponent, RecoveryToken, AppService, HotkeysService, SplitTabComponent } from 'tabby-core'
 import { Subscription } from 'rxjs'
-import type { BrowserWindow, WebContentsView, WebContents } from 'electron'
+import type { BrowserWindow, WebContentsView, WebContents, Input as ElectronInput } from 'electron'
 
 const remote = require('@electron/remote')
+
+const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta']
 
 /** @hidden */
 @Component({
@@ -30,13 +32,12 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     private lastBounds = ''
     private attached = false
     private visible = false
-    // Native views paint above all DOM, so the view has to get out of the way while Tabby
-    // draws its pane labels / drop zones. Two independent sources ask for that; a single
-    // flag would let one clear the other's request mid-gesture.
+    // Parking has three independent sources, each needs its own flag
     private rearranging = false
     private dragging = false
     private resizing = false
     private overlayParked = false
+    private forwardedKeys = new Set<string>()
     private subscriptions: Subscription[] = []
 
     constructor (injector: Injector, private zone: NgZone, private app: AppService, private hotkeys: HotkeysService) {
@@ -71,6 +72,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
             this.dragging = !!tab
             this.syncOverlay()
         }))
+        this.watchSpannerDrag()
 
         if (!this.url && !this.chromeless) {
             this.addressBarInput?.nativeElement.focus()
@@ -81,7 +83,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         return this.chromeless && !this.viewCreated
     }
 
-    /** Only a pane sharing its tab with others can be closed on its own */
+    // Only a pane sharing its tab with others can be closed on its own
     get isSplit (): boolean {
         return (this.splitParent?.getAllTabs().length ?? 0) > 1
     }
@@ -142,8 +144,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     }
 
     private destroyView (): void {
-        cancelAnimationFrame(this.boundsWatch)
-        this.boundsWatch = 0
+        this.stopBoundsWatch()
         this.lastBounds = ''
         if (this.view && this.attached) {
             try {
@@ -156,6 +157,12 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.attached = false
         this.view = undefined
         this.win = undefined
+        // The next view would otherwise start out parked
+        this.rearranging = false
+        this.dragging = false
+        this.resizing = false
+        this.overlayParked = false
+        this.forwardedKeys.clear()
     }
 
     private open (value: string): void {
@@ -169,8 +176,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         } else {
             this.view?.webContents.loadURL(value).catch(() => { /* handled via did-fail-load */ })
         }
-        // Hand the keyboard to the page, like any browser does on submit. Also gets the
-        // address bar out of :focus - see blurOwnInputs().
+        // Also drops the address bar out of :focus, see blurOwnInputs()
         this.view?.webContents.focus()
     }
 
@@ -221,6 +227,8 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
             this.blurOwnInputs()
             this.claimPaneFocus()
         })
+        // Any keyUp still owed is never arriving now
+        wc.on('blur', () => this.forwardedKeys.clear())
         wc.setWindowOpenHandler(({ url }) => {
             if (/^https?:\/\//i.test(url)) {
                 this.app.openNewTab({ type: BrowserTabComponent, inputs: { url } })
@@ -234,28 +242,20 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.updateBounds()
     }
 
-    /**
-     * The guest WebContents owns the keyboard while focused, so Tabby's document-level
-     * hotkey listener never sees these events. Replay them into HotkeysService.
-     */
-    private forwardToHotkeys (event: { preventDefault: () => void }, input: {
-        type: string
-        key: string
-        code: string
-        control: boolean
-        alt: boolean
-        meta: boolean
-        shift: boolean
-        isAutoRepeat: boolean
-    }): void {
-        if (input.type !== 'keyDown' && input.type !== 'keyUp') {
-            return
-        }
-        // Only modified or bare-modifier keystrokes: forwarding plain typing would let text
-        // entered on the page trigger single-key hotkeys.
-        const isModifierKey = ['Control', 'Shift', 'Alt', 'Meta'].includes(input.key)
-        const forwarded = isModifierKey || input.control || input.alt || input.meta
-        if (!forwarded) {
+    // The document-level hotkey listener never sees keys while the guest owns the keyboard
+    private forwardToHotkeys (event: { preventDefault: () => void }, input: ElectronInput): void {
+        if (input.type === 'keyDown') {
+            // Plain typing stays on the page, it would trigger single-key hotkeys
+            if (!MODIFIER_KEYS.includes(input.key) && !input.control && !input.alt && !input.meta) {
+                return
+            }
+            this.forwardedKeys.add(input.code)
+        } else if (input.type === 'keyUp') {
+            // Releasing the modifier first leaves the keyUp unmodified, so match what went down
+            if (!this.forwardedKeys.delete(input.code)) {
+                return
+            }
+        } else {
             return
         }
         this.hotkeys.pushKeyEvent(input.type === 'keyDown' ? 'keydown' : 'keyup', {
@@ -281,24 +281,16 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         return null
     }
 
-    /**
-     * SplitTabComponent re-focuses a pane on *any* click inside it, including our own
-     * toolbar, so focusing the view unconditionally would make the address bar
-     * un-typeable.
-     */
     private focusView (): void {
-        // A parked view sits outside the window and delivers no input, so handing it the
-        // keyboard black-holes every key event - including the keyup that ends
-        // `rearrange-panes`. focused$ fires repeatedly during a drag, so without this the
-        // mode can never end.
-        if (this.overlayParked) {
+        // A parked view delivers no input, including the keyup that ends `rearrange-panes`
+        if (this.overlayParked || !this.visible) {
             return
         }
-        if (this.ownInput() || !this.visible) {
+        // SplitTabComponent re-focuses the pane on any click inside it, our toolbar included
+        if (this.ownInput()) {
             return
         }
-        // SplitTabComponent emits focused$ on *every* pane, not just the active one, so
-        // grabbing the keyboard unconditionally makes sibling panes fight over it.
+        // focused$ is emitted on every pane of a split, not just the active one
         const parent = this.splitParent
         if (parent && parent.getFocusedTab() !== this) {
             return
@@ -306,23 +298,15 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.view?.webContents.focus()
     }
 
-    /**
-     * A DOM input keeps `:focus` even once the native view owns the keyboard, and
-     * HotkeysService gates hotkey$ on `input:focus` being empty - a focused address bar
-     * swallows every Tabby hotkey, Ctrl+Shift included.
-     */
+    // A DOM input keeps `:focus` once the view owns the keyboard, gating hotkey$ off
     private blurOwnInputs (): void {
         this.zone.run(() => this.ownInput()?.blur())
     }
 
-    /**
-     * Clicks land on the native view, not on the pane's DOM node, so the split tab's own
-     * click handler never fires and pane-targeted hotkeys would act on the wrong pane.
-     */
+    // Clicks land on the native view, so the split tab's own click handler never fires
     private claimPaneFocus (): void {
         const parent = this.splitParent
-        // focus() runs layout(), which rebuilds the spanner components mid-drag
-        if (!parent || parent.getFocusedTab() === this || parent._spannerResizing) {
+        if (!parent || parent.getFocusedTab() === this || this.resizing) {
             return
         }
         this.zone.run(() => parent.focus(this))
@@ -332,26 +316,39 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         return this.parent instanceof SplitTabComponent ? this.parent : null
     }
 
+    // The spanner drags on mousemove over the pane container, which the view would swallow
+    private watchSpannerDrag (): void {
+        this.addEventListenerUntilDestroyed(document.documentElement, 'mousedown', (event: Event) => {
+            // Parking takes the keyboard, which a background tab has no business doing
+            if (!this.visible || !(event.target as Element | null)?.closest?.('split-tab-spanner')) {
+                return
+            }
+            this.resizing = true
+            this.syncOverlay()
+        }, true)
+        this.addEventListenerUntilDestroyed(document.documentElement, 'mouseup', () => {
+            if (!this.resizing) {
+                return
+            }
+            this.resizing = false
+            this.syncOverlay()
+        }, true)
+    }
+
     private syncOverlay (): void {
         const parked = this.rearranging || this.dragging || this.resizing
         if (parked === this.overlayParked) {
             return
         }
         if (parked) {
-            // Take the keyboard off the native view *before* parking it. A parked view
-            // stops delivering before-input-event, so if it still holds focus the keyup
-            // that ends `rearrange-panes` reaches nobody and the mode latches. The host
-            // div is a plain tabindex=-1 target, so it won't trip the `input:focus` gate
-            // on hotkey$.
+            // Before parking, or the keyup that ends `rearrange-panes` reaches nobody
             (remote.getCurrentWebContents() as WebContents).focus()
             this.host?.nativeElement.focus()
         }
         this.overlayParked = parked
         this.updateBounds()
         if (!parked) {
-            // Parking costs the view its keyboard focus, and nothing hands it back - the
-            // pane goes key-dead until something else focuses it. focusView() re-checks
-            // that we're the visible, focused pane.
+            // Nothing hands the keyboard back on its own
             this.focusView()
         }
     }
@@ -370,29 +367,23 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.applyViewVisibility()
     }
 
-    /**
-     * A ResizeObserver only fires on size changes, so a pane that moves without resizing -
-     * dropped into another corner, sibling closed - would leave the native view behind.
-     * Poll the rect instead; setBounds is only called when it actually changed.
-     */
+    // A ResizeObserver misses a pane that moves without resizing
     private startBoundsWatch (): void {
+        if (this.boundsWatch) {
+            return
+        }
         this.zone.runOutsideAngular(() => {
             const tick = () => {
                 this.boundsWatch = requestAnimationFrame(tick)
-                // The spanner drags via mousemove on its DOM parent, which the native view
-                // would swallow, and any focus we take mid-drag runs layout() - that drops
-                // and rebuilds every spanner component, leaving the in-flight drag holding
-                // a detached element. Park for the duration. No observable for this, so
-                // piggyback on the frame we're already spending.
-                const resizing = this.splitParent?._spannerResizing ?? false
-                if (resizing !== this.resizing) {
-                    this.resizing = resizing
-                    this.syncOverlay()
-                }
                 this.updateBounds()
             }
             this.boundsWatch = requestAnimationFrame(tick)
         })
+    }
+
+    private stopBoundsWatch (): void {
+        cancelAnimationFrame(this.boundsWatch)
+        this.boundsWatch = 0
     }
 
     private updateBounds (): void {
@@ -400,30 +391,32 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
             return
         }
         const r = this.host.nativeElement.getBoundingClientRect()
-        const z = (remote.getCurrentWebContents() as WebContents).getZoomFactor()
-        const width = Math.round(r.width * z)
-        // Park the view outside the window rather than hiding it, so it stays attached and
-        // keeps reporting key events while it owns the keyboard. Width is kept, so the page
-        // sees no resize.
-        const x = this.overlayParked ? -width - 1000 : Math.round(r.left * z)
-        const bounds = {
-            x,
-            y: Math.round(r.top * z),
-            width,
-            height: Math.round(r.height * z),
-        }
-        // setBounds crosses the remote IPC boundary, so don't send an unchanged rect once
-        // per frame.
-        const key = JSON.stringify(bounds)
+        // getZoomFactor() and setBounds are both sync IPC and this runs every frame; a zoom
+        // change resizes the CSS viewport, so the rect covers it
+        const key = `${r.left} ${r.top} ${r.width} ${r.height} ${this.overlayParked}`
         if (key === this.lastBounds) {
             return
         }
         this.lastBounds = key
-        this.view.setBounds(bounds)
+        const z = (remote.getCurrentWebContents() as WebContents).getZoomFactor()
+        const width = Math.round(r.width * z)
+        // Parked, not hidden: it stays attached and keeps reporting key events
+        const x = this.overlayParked ? -width - 1000 : Math.round(r.left * z)
+        this.view.setBounds({
+            x,
+            y: Math.round(r.top * z),
+            width,
+            height: Math.round(r.height * z),
+        })
     }
 
     private setVisible (visible: boolean): void {
         this.visible = visible
+        if (visible && this.view) {
+            this.startBoundsWatch()
+        } else {
+            this.stopBoundsWatch()
+        }
         this.applyViewVisibility()
     }
 
