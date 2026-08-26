@@ -37,6 +37,9 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     private dragging = false
     private resizing = false
     private overlayParked = false
+    // webContents.isFocused() reports false for a guest view that just got focus
+    private viewFocused = false
+    private claimingPaneFocus = false
     private forwardedKeys = new Set<string>()
     private subscriptions: Subscription[] = []
 
@@ -162,6 +165,8 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.dragging = false
         this.resizing = false
         this.overlayParked = false
+        this.viewFocused = false
+        this.claimingPaneFocus = false
         this.forwardedKeys.clear()
     }
 
@@ -177,7 +182,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
             this.view?.webContents.loadURL(value).catch(() => { /* handled via did-fail-load */ })
         }
         // Also drops the address bar out of :focus, see blurOwnInputs()
-        this.view?.webContents.focus()
+        this.takeKeyboard()
     }
 
     private normalize (input: string): string {
@@ -224,11 +229,15 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
             this.forwardToHotkeys(e, input)
         })
         wc.on('focus', () => {
+            this.viewFocused = true
             this.blurOwnInputs()
             this.claimPaneFocus()
         })
-        // Any keyUp still owed is never arriving now
-        wc.on('blur', () => this.forwardedKeys.clear())
+        wc.on('blur', () => {
+            this.viewFocused = false
+            // Any keyUp still owed is never arriving now
+            this.forwardedKeys.clear()
+        })
         wc.setWindowOpenHandler(({ url }) => {
             if (/^https?:\/\//i.test(url)) {
                 this.app.openNewTab({ type: BrowserTabComponent, inputs: { url } })
@@ -282,6 +291,10 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     }
 
     private focusView (): void {
+        // The view this would focus is the one that just reported it has the keyboard
+        if (this.claimingPaneFocus) {
+            return
+        }
         // A parked view delivers no input, including the keyup that ends `rearrange-panes`
         if (this.overlayParked || !this.visible) {
             return
@@ -293,6 +306,14 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         // focused$ is emitted on every pane of a split, not just the active one
         const parent = this.splitParent
         if (parent && parent.getFocusedTab() !== this) {
+            return
+        }
+        this.takeKeyboard()
+    }
+
+    // Focusing a view that already holds the keyboard bounces it to the sibling pane
+    private takeKeyboard (): void {
+        if (this.viewFocused) {
             return
         }
         this.view?.webContents.focus()
@@ -309,7 +330,12 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         if (!parent || parent.getFocusedTab() === this || this.resizing) {
             return
         }
-        this.zone.run(() => parent.focus(this))
+        this.claimingPaneFocus = true
+        try {
+            this.zone.run(() => parent.focus(this))
+        } finally {
+            this.claimingPaneFocus = false
+        }
     }
 
     private get splitParent (): SplitTabComponent | null {
