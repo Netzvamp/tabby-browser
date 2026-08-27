@@ -24,16 +24,16 @@
         flex: 1;
     }
 
-    // Right-aligned even when it is the toolbar's only child
-    .close-pane {
+    .pane-actions {
         margin-left: auto;
+        display: flex;
+        gap: 4px;
     }
 
-    // Chromeless: the bar carries nothing but the close button
     &.minimal {
         padding: 0;
 
-        .close-pane {
+        .pane-action {
             padding: 0 4px;
             border: none;
             background: transparent;
@@ -63,6 +63,17 @@
         gap: 8px;
         width: 100%;
         max-width: 480px;
+    }
+
+    .url-prompt-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+
+    &.editing {
+        background: rgba(0, 0, 0, 0.85);
+        color: #fff;
     }
 }
 
@@ -98,8 +109,6 @@
     min-height: 0;
     outline: none;
 
-    // split-tab-spanner reaches 5px in from the pane border, where the view would cover it.
-    // Margin, not padding: it shrinks the border box, so the view bounds follow along.
     &.split {
         margin: 5px;
     }

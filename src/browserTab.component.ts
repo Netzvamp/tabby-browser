@@ -6,6 +6,8 @@ import type { BrowserWindow, WebContentsView, WebContents, Input as ElectronInpu
 const remote = require('@electron/remote')
 
 const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta']
+const FUNCTION_KEY = /^F\d{1,2}$/
+const COVERAGE_INTERVAL = 33
 
 /** @hidden */
 @Component({
@@ -20,6 +22,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     addressBarValue = ''
     promptValue = ''
     viewCreated = false
+    editingUrl = false
     loadError: string | null = null
 
     @ViewChild('host') host!: ElementRef<HTMLElement>
@@ -29,16 +32,12 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     private win?: BrowserWindow
     private view?: WebContentsView
     private boundsWatch = 0
+    private lastCoverageCheck = 0
     private lastBounds = ''
     private attached = false
     private visible = false
-    // Each parking gesture needs its own flag, or one would clear another's request
-    private rearranging = false
-    private dragging = false
-    private resizing = false
+    private gestures = new Set<string>()
     private overlayParked = false
-    private overlaySync = 0
-    // webContents.isFocused() reports false for a guest view that just got focus
     private viewFocused = false
     private claimingPaneFocus = false
     private forwardedKeys = new Set<string>()
@@ -60,24 +59,20 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         }))
         this.subscriptions.push(this.focused$.subscribe(() => this.focusView()))
 
-        this.subscriptions.push(this.hotkeys.hotkey$.subscribe(hk => {
-            if (hk === 'rearrange-panes') {
-                this.rearranging = true
-                this.syncOverlay()
+        this.subscriptions.push(this.hotkeys.hotkey$.subscribe((hk: string) => {
+            if (hk === 'rearrange-panes' && this.visible) {
+                this.setGesture('rearrange', true)
             }
         }))
-        this.subscriptions.push(this.hotkeys.hotkeyOff$.subscribe(hk => {
+        this.subscriptions.push(this.hotkeys.hotkeyOff$.subscribe((hk: string) => {
             if (hk === 'rearrange-panes') {
-                this.rearranging = false
-                this.syncOverlay()
+                this.setGesture('rearrange', false)
             }
         }))
-        this.subscriptions.push(this.app.tabDragActive$.subscribe(tab => {
-            this.dragging = !!tab
-            this.syncOverlay()
+        this.subscriptions.push(this.app.tabDragActive$.subscribe((tab: BaseTabComponent | null) => {
+            this.setGesture('drag', !!tab && this.visible)
         }))
         this.watchSpannerDrag()
-        this.watchOverlays()
 
         if (!this.url && !this.chromeless) {
             this.addressBarInput?.nativeElement.focus()
@@ -85,10 +80,13 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     }
 
     get showPrompt (): boolean {
-        return this.chromeless && !this.viewCreated
+        return this.chromeless && (!this.viewCreated || this.editingUrl)
     }
 
-    // Only a pane sharing its tab with others can be closed on its own
+    get canEditUrl (): boolean {
+        return this.chromeless && this.viewCreated && !this.editingUrl && !this.loadError
+    }
+
     get isSplit (): boolean {
         return (this.splitParent?.getAllTabs().length ?? 0) > 1
     }
@@ -97,8 +95,31 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.destroy()
     }
 
+    editUrl (): void {
+        this.promptValue = this.url
+        this.editingUrl = true
+        setTimeout(() => {
+            this.promptInput?.nativeElement.focus()
+            this.promptInput?.nativeElement.select()
+        })
+    }
+
+    cancelEdit (): void {
+        if (!this.editingUrl) {
+            return
+        }
+        this.editingUrl = false
+        this.promptValue = ''
+        this.blurOwnInputs()
+    }
+
     submitPrompt (): void {
-        this.open(this.normalize(this.promptValue))
+        const value = this.normalize(this.promptValue)
+        if (!value) {
+            return
+        }
+        this.editingUrl = false
+        this.open(value)
     }
 
     navigate (): void {
@@ -121,6 +142,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.destroyView()
         this.loadError = null
         this.viewCreated = false
+        this.editingUrl = false
         this.url = ''
         this.addressBarValue = ''
         this.promptValue = ''
@@ -150,8 +172,6 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
 
     private destroyView (): void {
         this.stopBoundsWatch()
-        cancelAnimationFrame(this.overlaySync)
-        this.overlaySync = 0
         this.lastBounds = ''
         if (this.view && this.attached) {
             try {
@@ -164,10 +184,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.attached = false
         this.view = undefined
         this.win = undefined
-        // The next view would otherwise start out parked
-        this.rearranging = false
-        this.dragging = false
-        this.resizing = false
+        this.gestures.clear()
         this.overlayParked = false
         this.viewFocused = false
         this.claimingPaneFocus = false
@@ -185,7 +202,7 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         } else {
             this.view?.webContents.loadURL(value).catch(() => { /* handled via did-fail-load */ })
         }
-        // Also drops the address bar out of :focus, see blurOwnInputs()
+        this.blurOwnInputs()
         this.takeKeyboard()
     }
 
@@ -239,12 +256,11 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         })
         wc.on('blur', () => {
             this.viewFocused = false
-            // Any keyUp still owed is never arriving now
             this.forwardedKeys.clear()
         })
         wc.setWindowOpenHandler(({ url }) => {
             if (/^https?:\/\//i.test(url)) {
-                this.app.openNewTab({ type: BrowserTabComponent, inputs: { url } })
+                this.zone.run(() => this.app.openNewTab({ type: BrowserTabComponent, inputs: { url } }))
             }
             return { action: 'deny' }
         })
@@ -253,26 +269,28 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
 
         this.startBoundsWatch()
         this.updateBounds()
-        this.syncOverlay()
     }
 
-    // The document-level hotkey listener never sees keys while the guest owns the keyboard
+    private forwardable (input: ElectronInput): boolean {
+        return MODIFIER_KEYS.includes(input.key) || FUNCTION_KEY.test(input.key)
+            || input.control || input.alt || input.meta
+    }
+
     private forwardToHotkeys (event: { preventDefault: () => void }, input: ElectronInput): void {
-        if (input.type === 'keyDown') {
-            // Plain typing stays on the page, it would trigger single-key hotkeys
-            if (!MODIFIER_KEYS.includes(input.key) && !input.control && !input.alt && !input.meta) {
+        const isDown = input.type === 'keyDown'
+        if (isDown) {
+            if (!this.forwardable(input)) {
                 return
             }
             this.forwardedKeys.add(input.code)
         } else if (input.type === 'keyUp') {
-            // Releasing the modifier first leaves the keyUp unmodified, so match what went down
             if (!this.forwardedKeys.delete(input.code)) {
                 return
             }
         } else {
             return
         }
-        this.hotkeys.pushKeyEvent(input.type === 'keyDown' ? 'keydown' : 'keyup', {
+        this.hotkeys.pushKeyEvent(isDown ? 'keydown' : 'keyup', {
             ctrlKey: input.control,
             metaKey: input.meta,
             altKey: input.alt,
@@ -296,19 +314,9 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
     }
 
     private focusView (): void {
-        // The view this would focus is the one that just reported it has the keyboard
-        if (this.claimingPaneFocus) {
+        if (this.claimingPaneFocus || this.overlayParked || !this.visible || this.ownInput()) {
             return
         }
-        // A parked view delivers no input, including the keyup that ends `rearrange-panes`
-        if (this.overlayParked || !this.visible) {
-            return
-        }
-        // SplitTabComponent re-focuses the pane on any click inside it, our toolbar included
-        if (this.ownInput()) {
-            return
-        }
-        // focused$ is emitted on every pane of a split, not just the active one
         const parent = this.splitParent
         if (parent && parent.getFocusedTab() !== this) {
             return
@@ -316,23 +324,20 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.takeKeyboard()
     }
 
-    // Focusing a view that already holds the keyboard bounces it to the sibling pane
     private takeKeyboard (): void {
-        if (this.viewFocused) {
+        if (this.viewFocused || this.overlayParked) {
             return
         }
         this.view?.webContents.focus()
     }
 
-    // A DOM input keeps `:focus` once the view owns the keyboard, gating hotkey$ off
     private blurOwnInputs (): void {
         this.zone.run(() => this.ownInput()?.blur())
     }
 
-    // Clicks land on the native view, so the split tab's own click handler never fires
     private claimPaneFocus (): void {
         const parent = this.splitParent
-        if (!parent || parent.getFocusedTab() === this || this.resizing) {
+        if (!parent || parent.getFocusedTab() === this || this.gestures.has('resize')) {
             return
         }
         this.claimingPaneFocus = true
@@ -347,83 +352,69 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         return this.parent instanceof SplitTabComponent ? this.parent : null
     }
 
-    // The spanner drags on mousemove over the pane container, which the view would swallow
     private watchSpannerDrag (): void {
         this.addEventListenerUntilDestroyed(document.documentElement, 'mousedown', (event: Event) => {
-            // Parking takes the keyboard, which a background tab has no business doing
-            if (!this.visible || !(event.target as Element | null)?.closest?.('split-tab-spanner')) {
-                return
+            if (this.visible && (event.target as Element | null)?.closest?.('split-tab-spanner')) {
+                this.setGesture('resize', true)
             }
-            this.resizing = true
-            this.syncOverlay()
         }, true)
         this.addEventListenerUntilDestroyed(document.documentElement, 'mouseup', () => {
-            if (!this.resizing) {
-                return
-            }
-            this.resizing = false
-            this.syncOverlay()
+            this.setGesture('resize', false)
         }, true)
     }
 
-    // Modals, menus and toasts are appended to body, and the view would paint over them
-    private watchOverlays (): void {
-        this.zone.runOutsideAngular(() => {
-            // A frame late, so the overlay is laid out by the time it is hit-tested
-            const observer = new MutationObserver(() => requestAnimationFrame(() => this.syncOverlay()))
-            observer.observe(document.body, { childList: true })
-            this.subscriptions.push(new Subscription(() => observer.disconnect()))
-        })
+    private setGesture (name: string, active: boolean): void {
+        if (active === this.gestures.has(name)) {
+            return
+        }
+        if (active) {
+            this.gestures.add(name)
+        } else {
+            this.gestures.delete(name)
+        }
+        this.syncOverlay()
     }
 
-    // Derived, never stored: a stale flag would hold the view parked for good
     private isCovered (): boolean {
         const host = this.host?.nativeElement
-        if (!host || !this.visible) {
+        if (!host || !this.visible || !this.view || this.loadError) {
             return false
         }
         const r = host.getBoundingClientRect()
         if (!r.width || !r.height) {
             return false
         }
-        const onTop = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
-        return !!onTop && !host.contains(onTop)
+        const inset = 2
+        const xs = [r.left + inset, r.left + r.width / 2, r.right - inset]
+        const ys = [r.top + inset, r.top + r.height / 2, r.bottom - inset]
+        for (const x of xs) {
+            for (const y of ys) {
+                const onTop = document.elementFromPoint(x, y)
+                if (onTop && !host.contains(onTop)) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private syncOverlay (): void {
-        const gesture = this.rearranging || this.dragging || this.resizing
+        const gesture = this.gestures.size > 0
         const parked = gesture || this.isCovered()
-        if (parked !== this.overlayParked) {
-            if (parked) {
-                (remote.getCurrentWebContents() as WebContents).focus()
-                // A gesture needs its keyup on an element we control; an overlay focuses itself
-                if (gesture) {
-                    this.host?.nativeElement.focus()
-                }
-            }
-            this.overlayParked = parked
-            this.updateBounds()
-            if (!parked) {
-                // Nothing hands the keyboard back on its own
-                this.focusView()
-            }
-        }
-        // An overlay leaves with a change detection run, not with an event we can hook
-        if (this.overlayParked && !gesture) {
-            this.scheduleOverlaySync()
-        }
-    }
-
-    private scheduleOverlaySync (): void {
-        if (this.overlaySync) {
+        if (parked === this.overlayParked) {
             return
         }
-        this.zone.runOutsideAngular(() => {
-            this.overlaySync = requestAnimationFrame(() => {
-                this.overlaySync = 0
-                this.syncOverlay()
-            })
-        })
+        if (parked) {
+            (remote.getCurrentWebContents() as WebContents).focus()
+            if (gesture) {
+                this.host?.nativeElement.focus()
+            }
+        }
+        this.overlayParked = parked
+        this.updateBounds()
+        if (!parked) {
+            this.focusView()
+        }
     }
 
     private onNavigated (url: string): void {
@@ -440,7 +431,6 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.applyViewVisibility()
     }
 
-    // A ResizeObserver misses a pane that moves without resizing
     private startBoundsWatch (): void {
         if (this.boundsWatch) {
             return
@@ -448,6 +438,11 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.zone.runOutsideAngular(() => {
             const tick = () => {
                 this.boundsWatch = requestAnimationFrame(tick)
+                const now = performance.now()
+                if (now - this.lastCoverageCheck >= COVERAGE_INTERVAL) {
+                    this.lastCoverageCheck = now
+                    this.syncOverlay()
+                }
                 this.updateBounds()
             }
             this.boundsWatch = requestAnimationFrame(tick)
@@ -464,8 +459,6 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
             return
         }
         const r = this.host.nativeElement.getBoundingClientRect()
-        // getZoomFactor() and setBounds are both sync IPC and this runs every frame; a zoom
-        // change resizes the CSS viewport, so the rect covers it
         const key = `${r.left} ${r.top} ${r.width} ${r.height} ${this.overlayParked}`
         if (key === this.lastBounds) {
             return
@@ -473,7 +466,6 @@ export class BrowserTabComponent extends BaseTabComponent implements AfterViewIn
         this.lastBounds = key
         const z = (remote.getCurrentWebContents() as WebContents).getZoomFactor()
         const width = Math.round(r.width * z)
-        // Parked, not hidden: it stays attached and keeps reporting key events
         const x = this.overlayParked ? -width - 1000 : Math.round(r.left * z)
         this.view.setBounds({
             x,

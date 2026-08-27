@@ -38,8 +38,6 @@ export class ButtonProvider extends ToolbarButtonProvider {
                 title: 'Open browser',
                 weight: 5,
                 click: () => {
-                    // Browser tabs need the SplitTabComponent wrapper openNewTab adds; it
-                    // is what draws the pane labels and drop zones
                     this.app.openNewTab({
                         type: BrowserTabComponent,
                         inputs: { url: this.config.store.browser.homepage },

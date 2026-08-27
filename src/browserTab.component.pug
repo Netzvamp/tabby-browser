@@ -1,6 +1,5 @@
-//- The view paints over any DOM on top of it, so the close button needs the toolbar
 .browser-tab
-    .toolbar('*ngIf'='!chromeless || isSplit', '[class.minimal]'='chromeless')
+    .toolbar('*ngIf'='!chromeless || isSplit || canEditUrl', '[class.minimal]'='chromeless')
         ng-container('*ngIf'='!chromeless')
             button.btn.btn-secondary(title='Back', '(click)'='goBack()')
                 i.fas.fa-arrow-left
@@ -15,9 +14,12 @@
                 '(keydown.enter)'='navigate()',
                 placeholder='Enter address'
             )
-        button.btn.btn-secondary.close-pane('*ngIf'='isSplit', title='Close pane', '(click)'='closePane()')
-            i.fas.fa-times
-    .url-prompt('*ngIf'='showPrompt')
+        .pane-actions('*ngIf'='canEditUrl || isSplit')
+            button.btn.btn-secondary.pane-action('*ngIf'='canEditUrl', title='Change URL', '(click)'='editUrl()')
+                i.fas.fa-pencil
+            button.btn.btn-secondary.pane-action('*ngIf'='isSplit', title='Close pane', '(click)'='closePane()')
+                i.fas.fa-times
+    .url-prompt('*ngIf'='showPrompt', '[class.editing]'='editingUrl')
         .url-prompt-inner
             label.url-prompt-label Enter URL
             input.form-control.url-prompt-input(
@@ -25,15 +27,17 @@
                 type='text',
                 '[(ngModel)]'='promptValue',
                 '(keydown.enter)'='submitPrompt()',
+                '(keydown.escape)'='cancelEdit()',
                 placeholder='https://...',
                 autofocus
             )
-            button.btn.btn-primary('(click)'='submitPrompt()') Go
+            .url-prompt-actions
+                button.btn.btn-secondary('*ngIf'='editingUrl', '(click)'='cancelEdit()') Cancel
+                button.btn.btn-primary('(click)'='submitPrompt()') Go
     .load-error('*ngIf'='loadError')
         .load-error-inner
             .load-error-message {{ loadError }}
             .load-error-actions
                 button.btn.btn-secondary('(click)'='cancel()') Cancel
                 button.btn.btn-primary('(click)'='reload()') Retry
-    //- tabindex: focus target for parking the native view, see syncOverlay()
     .view-host(#host, tabindex='-1', '[class.split]'='isSplit')
